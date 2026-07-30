@@ -1,4 +1,3 @@
 aiogram
 aiohttp
-
-https://github.com/Chodurov/Nexora_bot.git
+python-dotenv
