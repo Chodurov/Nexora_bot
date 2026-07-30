@@ -8,7 +8,7 @@ from aiohttp import web
 # -------------------------------------------------------------------
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
-BOT_TOKEN = "8936565888:AAF6PdPknDG4Ff1WQ6lZeqI6Do8KDp1GYrM"  # Твой токен
+BOT_TOKEN = "8936565888:AAFkpOjvW49VJsNsEyU1oujfFL9YbU-CPsA"  # Твой токен
 ADMIN_IDS = [8756814132, 8481526135]  # Твой ID и ID друга
 
 bot = Bot(token=BOT_TOKEN)
