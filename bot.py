@@ -257,6 +257,8 @@ async def auto_clean_old_orders():
 # -------------------------------------------------------------------
 # 6. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА
 # -------------------------------------------------------------------
+import os
+
 async def main():
     asyncio.create_task(auto_clean_old_orders())
 
@@ -266,12 +268,14 @@ async def main():
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "localhost", 8080)
+    
+    # Берем порт из окружения Railway (или 8080 по умолчанию) и хост 0.0.0.0
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
     print("🟢 Бот и сервер успешно запущены!")
     await dp.start_polling(bot)
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    if __name__ == "__main__":
+        asyncio.run(main())
