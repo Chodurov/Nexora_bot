@@ -10,7 +10,7 @@ from aiohttp import web
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
 # Берем токен из Environment Variables на Render, а если его нет — из строки
-BOT_TOKEN = os.getenv("8936565888:AAH-dX1vxyGFx7bSgNQiNElBLVtqKkx2ACg")  
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8936565888:AAH-dX1vxyGFx7bSgNQiNElBLVtqKkx2ACg"  
 ADMIN_IDS = [8756814132, 8481526135]  # Твой ID и ID друга
 
 bot = Bot(token=BOT_TOKEN)
