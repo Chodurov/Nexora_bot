@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -8,7 +9,8 @@ from aiohttp import web
 # -------------------------------------------------------------------
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
-BOT_TOKEN = "8936565888:AAH-dX1vxyGFx7bSgNQiNElBLVtqKkx2ACg"  # Твой токен
+# Берем токен из Environment Variables на Render, а если его нет — из строки
+BOT_TOKEN = os.getenv("8936565888:AAH-dX1vxyGFx7bSgNQiNElBLVtqKkx2ACg")  
 ADMIN_IDS = [8756814132, 8481526135]  # Твой ID и ID друга
 
 bot = Bot(token=BOT_TOKEN)
@@ -120,7 +122,6 @@ async def notify_client(order_id: int, text: str) -> bool:
 # -------------------------------------------------------------------
 @dp.callback_query(F.data.startswith(("accept_", "queue_", "busy_", "reject_")))
 async def handle_admin_action(callback: CallbackQuery):
-    # Проверяем, что кнопку нажал именно Админ
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("У вас нет прав для управления заказами!", show_alert=True)
         return
@@ -163,7 +164,6 @@ async def handle_admin_action(callback: CallbackQuery):
 
     await callback.answer("Статус обновлен!")
     
-    # Очищаем старые статусы в сообщении, чтобы не было дублей
     clean_text = callback.message.text.split("\n\n**СТАТУС:**")[0]
     
     await callback.message.edit_text(
@@ -174,17 +174,18 @@ async def handle_admin_action(callback: CallbackQuery):
 
 
 # -------------------------------------------------------------------
-# 4. ПРИЕМ ДАННЫХ С САЙТА (И СЕРВЕР CORS)
+# 4. ПРИЕМ ДАННЫХ С САЙТАИ И ПИНГ ДЛЯ UPTIMEROBOT
 # -------------------------------------------------------------------
 async def handle_website_order(request):
     global order_counter
 
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
     if request.method == "OPTIONS":
-        headers = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-        }
         return web.Response(status=200, headers=headers)
 
     try:
@@ -214,7 +215,6 @@ async def handle_website_order(request):
             f"📝 **Детали запроса:**\n{details}"
         )
 
-        # Отправляем сообщение ВСЕМ админам из списка
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
@@ -226,13 +226,16 @@ async def handle_website_order(request):
             except Exception as e:
                 print(f"Ошибка отправки админу {admin_id}: {e}")
 
-        headers = {"Access-Control-Allow-Origin": "*"}
         return web.json_response({"status": "success", "order_id": order_id}, headers=headers)
 
     except Exception as e:
         print(f"❌ ОШИБКА: {e}")
-        headers = {"Access-Control-Allow-Origin": "*"}
         return web.json_response({"status": "error", "message": str(e)}, status=400, headers=headers)
+
+
+# Функция-пинг, чтобы UptimeRobot проверял, что сервер жив
+async def handle_health_check(request):
+    return web.Response(text="Nexora Bot Online 24/7", status=200)
 
 
 # -------------------------------------------------------------------
@@ -257,14 +260,19 @@ async def auto_clean_old_orders():
 # -------------------------------------------------------------------
 # 6. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА
 # -------------------------------------------------------------------
-import os
-
 async def main():
     asyncio.create_task(auto_clean_old_orders())
 
     app = web.Application()
+    
+    # Роуты для сайта
     app.router.add_post("/api/order", handle_website_order)
+    app.router.add_post("/send", handle_website_order) # На случай старого URL
     app.router.add_options("/api/order", handle_website_order)
+    app.router.add_options("/send", handle_website_order)
+
+    # Роут для UptimeRobot (Главная страница)
+    app.router.add_get("/", handle_health_check)
 
     runner = web.AppRunner(app)
     await runner.setup()
