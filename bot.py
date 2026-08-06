@@ -48,45 +48,52 @@ async def start_cmd(message: types.Message):
         )
         return
 
+    # Вспомогательная функция для отправки сохраненного статуса
+    async def send_order_status(order_id: int, order: dict):
+        order["client_chat_id"] = message.chat.id
+        
+        # Если админ уже ответил на заказ — отправляем сохраненный текст ответа
+        if "last_status_text" in order:
+            await message.answer(
+                f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
+                f"Информация по вашему **Заказу №{order_id}**:\n"
+                f"📌 Status: **{order.get('status_label', 'Обновлен')}**\n\n"
+                f"{order['last_status_text']}",
+                parse_mode="Markdown"
+            )
+        else:
+            # Если админ еще не нажал ни одну кнопку
+            await message.answer(
+                f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
+                f"Вы успешно привязаны к **Заказу №{order_id}**! ✅\n"
+                f"Ваша заявка обрабатывается. Как только разработчик изменит статус заказа, вы получите уведомление здесь!",
+                parse_mode="Markdown"
+            )
+
     # 2. Если /start нажал Клиент по глубокой ссылке (например, /start order_1)
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("order_"):
         try:
             order_id = int(args[1].split("_")[1])
             if order_id in orders_db:
-                orders_db[order_id]["client_chat_id"] = message.chat.id
-                await message.answer(
-                    f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
-                    f"Вы успешно привязаны к **Заказу №{order_id}**!\n"
-                    f"Сюда будут приходить все обновления по вашей заявке.",
-                    parse_mode="Markdown"
-                )
+                await send_order_status(order_id, orders_db[order_id])
                 return
         except ValueError:
             pass
 
     # 3. Если /start нажал Клиент без ссылки — ищем по юзернейму
-    found_order_id = None
     if username:
         for order_id, order in orders_db.items():
             saved_contact = clean_username(order.get("contact", ""))
             if saved_contact and saved_contact == username:
-                order["client_chat_id"] = message.chat.id
-                found_order_id = order_id
-                break
+                await send_order_status(order_id, order)
+                return
 
-    if found_order_id:
-        await message.answer(
-            f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
-            f"Мы нашли ваш **Заказ №{found_order_id}**! ✅\n"
-            f"Ваш аккаунт успешно привязан. Теперь сюда будут приходить статусы по заказу!",
-            parse_mode="Markdown"
-        )
-    else:
-        await message.answer(
-            "Здравствуйте! 😊 Спасибо за обращение в **Nexora Studio**.\n\n"
-            "Ваша заявка обрабатывается. Как только разработчик изменит статус заказа, вы получите уведомление здесь!"
-        )
+    # 4. Если заказов не найдено
+    await message.answer(
+        "Здравствуйте! 😊 Спасибо за обращение в **Nexora Studio**.\n\n"
+        "У вас пока нет активных заказов. Вы можете оформить заявку на нашем сайте!"
+    )
 
 
 # -------------------------------------------------------------------
