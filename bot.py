@@ -39,14 +39,15 @@ async def start_cmd(message: types.Message):
     user_id = message.from_user.id
     username = clean_username(message.from_user.username)
 
-    # 1. Если /start нажал кто-то из Админов (Ты или Твой друг)
-    if user_id in ADMIN_IDS:
-        await message.answer(
-            "👑 **Привет, Админ Nexora Studio!**\n\n"
-            "Панель управления готова к работе.",
-            parse_mode="Markdown"
-        )
-        return
+    # 3. Если /start нажал Клиент без ссылки — ищем ПОСЛЕДНИЙ заказ по юзернейму
+    if username:
+        # Идем в обратном порядке от новейших заказов к старым
+        for order_id in sorted(orders_db.keys(), reverse=True):
+            order = orders_db[order_id]
+            saved_contact = clean_username(order.get("contact", ""))
+            if saved_contact and saved_contact == username:
+                await send_order_status(order_id, order)
+                return
 
     # Вспомогательная функция для отправки сохраненного статуса
     async def send_order_status(order_id: int, order: dict):
