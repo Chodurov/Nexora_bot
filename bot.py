@@ -32,38 +32,38 @@ def clean_username(raw_contact: str) -> str:
 
 
 # -------------------------------------------------------------------
-# 1. КОМАНДА /start
+# 1. КОМАНДА /start (УМНЫЙ ПОИСК И ОТПРАВКА СТАТУСА)
 # -------------------------------------------------------------------
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
-    username = clean_username(message.from_user.username)
+    raw_username = message.from_user.username or ""
+    username = clean_username(raw_username)
 
-    # 3. Если /start нажал Клиент без ссылки — ищем ПОСЛЕДНИЙ заказ по юзернейму
-    if username:
-        # Идем в обратном порядке от новейших заказов к старым
-        for order_id in sorted(orders_db.keys(), reverse=True):
-            order = orders_db[order_id]
-            saved_contact = clean_username(order.get("contact", ""))
-            if saved_contact and saved_contact == username:
-                await send_order_status(order_id, order)
-                return
+    # 1. Если /start нажал Админ
+    if user_id in ADMIN_IDS:
+        await message.answer(
+            "👑 **Привет, Админ Nexora Studio!**\n\n"
+            "Панель управления готова к работе.",
+            parse_mode="Markdown"
+        )
+        return
 
-    # Вспомогательная функция для отправки сохраненного статуса
+    # Вспомогательная функция отправки статуса
     async def send_order_status(order_id: int, order: dict):
         order["client_chat_id"] = message.chat.id
+        status_label = order.get("status_label", "Обрабатывается")
         
-        # Если админ уже ответил на заказ — отправляем сохраненный текст ответа
+        # Если админ уже нажал любую кнопку (Принять / Занят / В очередь / Отклонить)
         if "last_status_text" in order:
             await message.answer(
                 f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
-                f"Информация по вашему **Заказу №{order_id}**:\n"
-                f"📌 Status: **{order.get('status_label', 'Обновлен')}**\n\n"
-                f"{order['last_status_text']}",
+                f"📌 **Статус Заказа №{order_id}:** {status_label}\n\n"
+                f"💬 **Ответ от разработчика:**\n{order['last_status_text']}",
                 parse_mode="Markdown"
             )
         else:
-            # Если админ еще не нажал ни одну кнопку
+            # Если админ еще не нажимал кнопки
             await message.answer(
                 f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
                 f"Вы успешно привязаны к **Заказу №{order_id}**! ✅\n"
@@ -71,7 +71,7 @@ async def start_cmd(message: types.Message):
                 parse_mode="Markdown"
             )
 
-    # 2. Если /start нажал Клиент по глубокой ссылке (например, /start order_1)
+    # 2. Если /start по глубокой ссылке (/start order_1)
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("order_"):
         try:
@@ -82,18 +82,22 @@ async def start_cmd(message: types.Message):
         except ValueError:
             pass
 
-    # 3. Если /start нажал Клиент без ссылки — ищем по юзернейму
+    # 3. Поиск заказа по юзернейму клиента
     if username:
-        for order_id, order in orders_db.items():
+        for order_id in sorted(orders_db.keys(), reverse=True):
+            order = orders_db[order_id]
             saved_contact = clean_username(order.get("contact", ""))
-            if saved_contact and saved_contact == username:
+            
+            # Проверяем точное совпадение или вхождение юзернейма
+            if saved_contact and (saved_contact == username or username in saved_contact or saved_contact in username):
                 await send_order_status(order_id, order)
                 return
 
-    # 4. Если заказов не найдено
+    # 4. Если заказ не найден
     await message.answer(
         "Здравствуйте! 😊 Спасибо за обращение в **Nexora Studio**.\n\n"
-        "У вас пока нет активных заказов. Вы можете оформить заявку на нашем сайте!"
+        "У вас пока нет активных заказов или юзернейм на сайте был указан с ошибкой.\n"
+        "Оформите заявку на сайте и убедитесь, что правильно указали Telegram!"
     )
 
 
