@@ -1,38 +1,72 @@
-import asyncio
 import os
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types, F
+import json
+import logging
+import asyncio
+import re
+from fastapi import FastAPI, Request
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiohttp import web
 
 # -------------------------------------------------------------------
-# НАСТРОЙКИ
+# НАСТРОЙКА ЛОГИРОВАНИЯ
 # -------------------------------------------------------------------
-# Берем токен из Environment Variables на Render, а если его нет — из строки
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "8936565888:AAH-dX1vxyGFx7bSgNQiNElBLVtqKkx2ACg"  
-ADMIN_IDS = [8756814132, 8481526135]  # Твой ID и ID друга
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# -------------------------------------------------------------------
+# КОНФИГУРАЦИЯ (ТОКЕН И АДМИНЫ)
+# -------------------------------------------------------------------
+BOT_TOKEN = "8936565888:AAH-dX1vxyGFx7bSgNQiNElBLVtqKkx2ACg"  # Укажи здесь свой полный токен бота, если он отличается
+ADMIN_IDS = [8756814132]  # Твой Telegram ID и ID твоих соразработчиков
+
+# Файл базы данных
+ORDERS_FILE = "orders_db.json"
+
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# База данных в памяти
-orders_db = {}
-order_counter = 0
-
-
-# Вспомогательная функция очистки юзернейма
-def clean_username(raw_contact: str) -> str:
-    """Очищает контакт от @, ссылок и пробелов для точного сравнения."""
-    if not raw_contact:
-        return ""
-    contact = raw_contact.strip().lower()
-    contact = contact.replace("https://t.me/", "").replace("t.me/", "").replace("@", "")
-    return contact
-
+# FastAPI сервер
+app = FastAPI()
 
 # -------------------------------------------------------------------
-# 1. КОМАНДА /start (УМНЫЙ ПОИСК И ОТПРАВКА СТАТУСА)
+# РАБОТА С ФАЙЛОМ БАЗЫ ДАННЫХ (PERSISTENT STORAGE)
+# -------------------------------------------------------------------
+def load_orders() -> dict:
+    """Загружает заказы из файла JSON при запуске"""
+    if os.path.exists(ORDERS_FILE):
+        try:
+            with open(ORDERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # Ключи в JSON всегда строки, преобразуем обратно в int (ID заказа)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logger.error(f"Ошибка чтения {ORDERS_FILE}: {e}")
+    return {}
+
+def save_orders():
+    """Сохраняет текущее состояние заказов в файл JSON"""
+    try:
+        with open(ORDERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(orders_db, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+            logger.error(f"Ошибка сохранения {ORDERS_FILE}: {e}")
+
+# Загружаем сохраненные заказы из файла
+orders_db = load_orders()
+
+def clean_username(raw: str) -> str:
+    """Очищает юзернейм от @ и символов пробела"""
+    if not raw:
+        return ""
+    cleaned = raw.strip()
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    return cleaned.lower()
+
+# -------------------------------------------------------------------
+# 1. КОМАНДА /start
 # -------------------------------------------------------------------
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
@@ -52,9 +86,10 @@ async def start_cmd(message: types.Message):
     # Вспомогательная функция отправки статуса
     async def send_order_status(order_id: int, order: dict):
         order["client_chat_id"] = message.chat.id
+        save_orders()  # Сохраняем привязанный chat_id
+        
         status_label = order.get("status_label", "Обрабатывается")
         
-        # Если админ уже нажал любую кнопку (Принять / Занят / В очередь / Отклонить)
         if "last_status_text" in order:
             await message.answer(
                 f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
@@ -63,7 +98,6 @@ async def start_cmd(message: types.Message):
                 parse_mode="Markdown"
             )
         else:
-            # Если админ еще не нажимал кнопки
             await message.answer(
                 f"Здравствуйте, {message.from_user.first_name}! 😊\n\n"
                 f"Вы успешно привязаны к **Заказу №{order_id}**! ✅\n"
@@ -82,221 +116,185 @@ async def start_cmd(message: types.Message):
         except ValueError:
             pass
 
-    # 3. Поиск заказа по юзернейму клиента
+    # 3. Поиск заказа по юзернейму
     if username:
         for order_id in sorted(orders_db.keys(), reverse=True):
             order = orders_db[order_id]
             saved_contact = clean_username(order.get("contact", ""))
             
-            # Проверяем точное совпадение или вхождение юзернейма
             if saved_contact and (saved_contact == username or username in saved_contact or saved_contact in username):
                 await send_order_status(order_id, order)
                 return
 
-    # 4. Если заказ не найден
+    # 4. Если заказов не найдено
     await message.answer(
         "Здравствуйте! 😊 Спасибо за обращение в **Nexora Studio**.\n\n"
-        "У вас пока нет активных заказов или юзернейм на сайте был указан с ошибкой.\n"
-        "Оформите заявку на сайте и убедитесь, что правильно указали Telegram!"
+        "У вас пока нет активных заказов. Вы можете оформить заявку на нашем сайте!"
     )
 
-
 # -------------------------------------------------------------------
-# 2. КНОПКИ УПРАВЛЕНИЯ ДЛЯ АДМИНА
+# 2. ВСПОМОГАТЕЛЬНЫЕ КНОПКИ УПРАВЛЕНИЯ ЗАКАЗОМ
 # -------------------------------------------------------------------
-def get_admin_keyboard(order_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🟢 Принять заказ", callback_data=f"accept_{order_id}"),
-            InlineKeyboardButton(text="⏳ В очередь", callback_data=f"queue_{order_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🔴 Занят", callback_data=f"busy_{order_id}"),
-            InlineKeyboardButton(text="❌ Отклонить заказ", callback_data=f"reject_{order_id}")
+def get_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Принять заказ", callback_data=f"accept_{order_id}"),
+                InlineKeyboardButton(text="⏳ В очередь", callback_data=f"queue_{order_id}")
+            ],
+            [
+                InlineKeyboardButton(text="🔴 Занят", callback_data=f"busy_{order_id}"),
+                InlineKeyboardButton(text="❌ Отклонить заказ", callback_data=f"decline_{order_id}")
+            ]
         ]
-    ])
-
-
-async def notify_client(order_id: int, text: str) -> bool:
-    """Отправляет сообщение клиенту, если его chat_id привязан."""
-    order = orders_db.get(order_id)
-    if order and order.get("client_chat_id"):
-        try:
-            await bot.send_message(chat_id=order["client_chat_id"], text=text)
-            return True
-        except Exception as e:
-            print(f"Ошибка отправки клиенту: {e}")
-    return False
-
+    )
 
 # -------------------------------------------------------------------
-# 3. ОБРАБОТЧИКИ КНОПОК АДМИНА
+# 3. ОБРАБОТКА НАЖАТИЯ КНОПОК АДМИНОМ
 # -------------------------------------------------------------------
-@dp.callback_query(F.data.startswith(("accept_", "queue_", "busy_", "reject_")))
-async def handle_admin_action(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("У вас нет прав для управления заказами!", show_alert=True)
+@dp.callback_query()
+async def process_callback(callback: CallbackQuery):
+    data = callback.data
+    
+    if "_" not in data:
+        await callback.answer()
         return
 
-    action, order_id_str = callback.data.split("_")
-    order_id = int(order_id_str)
+    action, order_id_str = data.split("_", 1)
+    try:
+        order_id = int(order_id_str)
+    except ValueError:
+        await callback.answer("Ошибка в формате заказа.")
+        return
 
-    order = orders_db.get(order_id)
-    if not order:
+    # Проверяем наличие заказа в базе данных
+    if order_id not in orders_db:
         await callback.answer("Заказ устарел или не найден!", show_alert=True)
         return
 
-    messages = {
-        "accept": "Ваш заказ принят✅ Ваша работа будет готова спустя некоторое время. Спасибо что выбрали нас😊.",
-        "queue": f"Вы вошли в очередь✅ Вы на {order_id} месте. Ожидайте своей очереди. Спасибо что выбрали нас😊.",
-        "busy": "Разработчик сейчас занят! Просим подождать. Когда разработчик будет свободен, он ответит вам!",
-        "reject": "Извините! Ваш заказ не соответствует нашим работам. Ваш заказ отклонен❌."
-    }
+    order = orders_db[order_id]
+    client_chat_id = order.get("client_chat_id")
+    client_username = order.get("contact", "клиент")
 
-    status_labels = {
-        "accept": "🟢 Принят в работу",
-        "queue": f"⏳ В очереди ({order_id} место)",
-        "busy": "🔴 Разработчик занят",
-        "reject": "❌ Отклонен"
-    }
-
-    client_msg = messages[action]
-    sent_successfully = await notify_client(order_id, client_msg)
-
-    order["last_status_text"] = client_msg
-    order["status_label"] = status_labels[action]
-
-    if sent_successfully:
-        note = "\n\n✅ **Уведомление доставлено клиенту в Telegram!**"
+    # Формируем ответы и статусы
+    if action == "accept":
+        status_label = "✅ Принят"
+        client_text = f"Ваш **Заказ №{order_id}** успешно принят в работу! 🚀 Разработчик уже занимается вашей задачей."
+        admin_note = "✅ **Вы ПРИНЯЛИ заказ.** Клиент уведомлен!"
+    elif action == "queue":
+        status_label = "⏳ В очереди"
+        client_text = f"Здравствуйте! Вы вошли в очередь по **Заказу №{order_id}** ✅ Как только подойдет ваш черед, мы начнем разработку!"
+        admin_note = "⏳ **Заказ помещен В ОЧЕРЕДЬ.** Клиент уведомлен!"
+    elif action == "busy":
+        status_label = "🔴 Разработчик занят"
+        client_text = f"Здравствуйте! Разработчик сейчас занят работой по текущим проектам. Ваш **Заказ №{order_id}** принят на рассмотрение, мы ответим при первой возможности!"
+        admin_note = "🔴 **Вы установили статус 'ЗАНЯТ'.**"
+    elif action == "decline":
+        status_label = "❌ Отклонен"
+        client_text = f"К сожалению, ваш **Заказ №{order_id}** отклонен. Свяжитесь с нами, если у вас возникли вопросы."
+        admin_note = "❌ **Заказ ОТКЛОНЕН.**"
     else:
-        note = (
-            "\n\n⚠️ **Клиент еще не привязался к боту.**\n"
-            f"Как только клиент с юзернеймом `{order['contact']}` напишет боту `/start`, ему придет статус."
+        await callback.answer()
+        return
+
+    # Сохраняем обновленный статус
+    order["status_label"] = status_label
+    order["last_status_text"] = client_text
+    save_orders()  # Сохраняем в файл!
+
+    # Отправка сообщения клиенту, если он привязан
+    if client_chat_id:
+        try:
+            await bot.send_message(client_chat_id, client_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Не удалось отправить статус клиенту {client_chat_id}: {e}")
+
+    # Обновляем сообщение у Админа
+    client_info = f"@{client_username}" if not client_username.startswith("http") else client_username
+    
+    warning_text = ""
+    if not client_chat_id:
+        warning_text = (
+            f"\n\n⚠️ *Клиент еще не написали боту /start.*\n"
+            f"Как только пользователь @{clean_username(client_username)} напишет `/start`, ему сразу придет этот статус."
         )
 
-    await callback.answer("Статус обновлен!")
-    
-    clean_text = callback.message.text.split("\n\n**СТАТУС:**")[0]
-    
-    await callback.message.edit_text(
-        f"{clean_text}\n\n**СТАТУС:** {status_labels[action]}{note}",
-        parse_mode="Markdown",
-        reply_markup=get_admin_keyboard(order_id) if action != "reject" else None
+    updated_message = (
+        f"🚀 **ЗАКАЗ №{order_id}**\n\n"
+        f"📌 **Проект/Услуга:** {order.get('service', 'Н/Д')}\n"
+        f"👤 **Контакты клиента:** {client_info}\n"
+        f"📝 **Детали:** {order.get('details', 'Без описания')}\n\n"
+        f"СТАТУС: **{status_label}**\n"
+        f"_{admin_note}_{warning_text}"
     )
 
+    try:
+        await callback.message.edit_text(
+            updated_message,
+            reply_markup=get_order_keyboard(order_id),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения админа: {e}")
+
+    await callback.answer("Статус заказа обновлен!")
 
 # -------------------------------------------------------------------
-# 4. ПРИЕМ ДАННЫХ С САЙТАИ И ПИНГ ДЛЯ UPTIMEROBOT
+# 4. API ЭНДПОИНТ ДЛЯ ПРИЕМА ЗАКАЗОВ С САЙТА
 # -------------------------------------------------------------------
-async def handle_website_order(request):
-    global order_counter
-
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    }
-
-    if request.method == "OPTIONS":
-        return web.Response(status=200, headers=headers)
-
+@app.post("/api/order")
+async def create_order(request: Request):
     try:
         data = await request.json()
-        print(f"📥 ПОЛУЧЕН ЗАКАЗ С САЙТА: {data}")
-
-        order_counter += 1
-        order_id = order_counter
-
-        service = data.get("service", "Заказ с сайта")
-        contact = data.get("contact", "Не указан")
-        details = data.get("details", "Без описания")
-
-        orders_db[order_id] = {
-            "service": service,
-            "contact": contact,
-            "details": details,
-            "client_chat_id": None,
-            "created_at": datetime.now(),
-            "status_label": "Новый"
+        
+        # Определяем следующий ID заказа
+        next_id = max(orders_db.keys(), default=0) + 1
+        
+        # Записываем заказ
+        new_order = {
+            "service": data.get("service", "Дизайн / Разработка"),
+            "contact": data.get("contact", "Не указан"),
+            "details": data.get("details", "Без описания"),
+            "client_chat_id": None
         }
+        
+        orders_db[next_id] = new_order
+        save_orders()  # Мгновенно сохраняем в файл JSON!
 
-        msg_text = (
-            f"🚀 **НОВЫЙ ЗАКАЗ №{order_id}!**\n\n"
-            f"📌 **Проект/Услуга:** {service}\n"
-            f"👤 **Контакты клиента:** {contact}\n"
-            f"📝 **Детали запроса:**\n{details}"
-        )
-
+        # Рассылаем уведомление ВСЕМ Админам
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
-                    chat_id=admin_id,
-                    text=msg_text,
-                    parse_mode="Markdown",
-                    reply_markup=get_admin_keyboard(order_id)
+                    admin_id,
+                    f"🚀 **НОВЫЙ ЗАКАЗ №{next_id}!**\n\n"
+                    f"📌 **Проект/Услуга:** {new_order['service']}\n"
+                    f"👤 **Контакты клиента:** {new_order['contact']}\n"
+                    f"📝 **Детали запроса:** {new_order['details']}",
+                    reply_markup=get_order_keyboard(next_id),
+                    parse_mode="Markdown"
                 )
             except Exception as e:
-                print(f"Ошибка отправки админу {admin_id}: {e}")
+                logger.error(f"Ошибка отправки админу {admin_id}: {e}")
 
-        return web.json_response({"status": "success", "order_id": order_id}, headers=headers)
-
+        return {"status": "success", "order_id": next_id}
     except Exception as e:
-        print(f"❌ ОШИБКА: {e}")
-        return web.json_response({"status": "error", "message": str(e)}, status=400, headers=headers)
+        logger.error(f"Ошибка обработки заказа с сайта: {e}")
+        return {"status": "error", "message": str(e)}
 
-
-# Функция-пинг, чтобы UptimeRobot проверял, что сервер жив
-async def handle_health_check(request):
-    return web.Response(text="Nexora Bot Online 24/7", status=200)
-
+@app.get("/")
+async def root():
+    return {"status": "running", "orders_count": len(orders_db)}
 
 # -------------------------------------------------------------------
-# 5. ФОНОВАЯ ОЧИСТКА СТАРЫХ ЗАКАЗОВ (РАЗ В 24 ЧАСА)
+# 5. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА С ЗАЩИТОЙ ОТ КОНФЛИКТОВ
 # -------------------------------------------------------------------
-async def auto_clean_old_orders():
-    while True:
-        await asyncio.sleep(86400)
-        now = datetime.now()
-        expired_ids = []
-
-        for order_id, order in orders_db.items():
-            created_at = order.get("created_at")
-            if created_at and (now - created_at) > timedelta(days=7):
-                expired_ids.append(order_id)
-
-        for order_id in expired_ids:
-            del orders_db[order_id]
-            print(f"🧹 Заказ №{order_id} автоматически удален из памяти (прошло 7 дней).")
-
-
-# -------------------------------------------------------------------
-# 6. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА
-# -------------------------------------------------------------------
-async def main():
-    asyncio.create_task(auto_clean_old_orders())
-
-    app = web.Application()
-    
-    # Роуты для сайта
-    app.router.add_post("/api/order", handle_website_order)
-    app.router.add_post("/send", handle_website_order) # На случай старого URL
-    app.router.add_options("/api/order", handle_website_order)
-    app.router.add_options("/send", handle_website_order)
-
-    # Роут для UptimeRobot (Главная страница)
-    app.router.add_get("/", handle_health_check)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-    print("🟢 Бот и сервер успешно запущены!")
-
-    await dp.start_polling(bot)
-
+@app.on_event("startup")
+async def on_startup():
+    # Удаляем вебхук при старте, чтобы исключить конфликты
+    await bot.delete_webhook(drop_pending_updates=True)
+    # Запускаем polling в фоновой задаче
+    asyncio.create_task(dp.start_polling(bot))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
