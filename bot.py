@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 import re
+import uvicorn
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
@@ -296,5 +297,4 @@ async def on_startup():
     asyncio.create_task(dp.start_polling(bot))
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
